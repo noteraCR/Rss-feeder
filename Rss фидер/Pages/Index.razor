@@ -1,0 +1,555 @@
+﻿@page "/"
+
+
+<PageTitle>Последние новости</PageTitle>
+
+<div class="center">
+    <div class="collapsable settings">
+        <div class="title oiHover" @onclick="@ToggleOptions">
+            <div class="titleCollapsable">
+                <span class="oi oi-globe"></span>
+                <h2 class="d-inline-block">Настройки</h2>
+            </div>
+        </div>
+        <div class="collapsable-panel @dNoneOptions">
+            <div>
+                <div class="firstSettings">
+                    <div class="pb-3">
+                        <input class="inputCheckbox" type="checkbox" @onclick="ToggleFormatting" />
+                        <div class="d-inline">Отключить в описании форматирование по тегам?</div>
+                    </div>
+                    <div class="pb-3">
+                        <div>Введите частоту обновления ленты в секундах</div>
+                        <div class="divTable">
+                            <div class="t"><input class="inputForm form-control" placeholder="60" @bind="settedRefreshTime"/></div>
+                            <button class="btn btn-success" @onclick="SetRefreshTime">Установить</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="collapsable myChannels">
+                    <div class="title oiHover" @onclick="@ToggleMySources">
+                        <div>
+                        @if (collapsedMySources)
+                        {
+                            <span class="oi oi-chevron-right"></span>
+                        }
+                        else
+                        {
+                            <span class="oi oi-chevron-bottom oiHover"></span>
+                        }
+                            <div class="d-inline-block">Мои источники</div>
+                        </div>
+                    </div>
+                    <div class="collapsable-panel @dNoneMySources">
+                        <span>Введите RSS-канал</span>
+                            <div class="addRss">
+                            <div class="divTable">
+                                <div class="t"><input class="inputForm form-control" placeholder="https://habr.com/ru/rss/interesting/" @bind="settedChannel"/></div>
+                                <button class="btn btn-success" @onclick="AddChannel">Добавить</button>
+                            </div>
+                            @if (channelAlreadyAdded == true)
+                                {
+                                    <div class="channelAlert">Такой канал уже есть. Введите другой</div>
+                                }
+                                @if (channelNotResponse == true)
+                                {
+                                    <div class="channelAlert">Некорректный адрес. Введите другой</div>
+                                }
+                        </div>
+                        @if (channels.Count > 0)
+                        {
+                            <div class="allChannels">
+                                @foreach (var channel in channels)
+                                {
+                                    <div>
+                                        <div class="d-inline">@channel.Url</div><button class="btn btn-close" @onclick="() => DeleteChannel(channel.Id)"></button>
+                                    </div>
+                                }
+                            </div>
+                        }   
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    @if (cantAccessProxy == false)
+    {
+        @if (channels.Count == 0)
+        {
+            <div>Добавьте Rss источник</div>
+        }
+        else if (items.Count == 0)
+        {
+            <div class="spinner"></div>
+        }
+    
+        @if (items != null)
+        {
+        
+        @foreach (var item in items)
+            {
+                <Collapsable Title="@item.HtmlTitle" PubDate="@item.PubDate" Collapsed="true" Description="@item.Description" FormattingHtml=@formattingHtml></Collapsable>
+            }
+        }
+    }
+    else
+    {
+        <div>Подключение к прокси-серверу по адресу "@proxy.Address" вызвало ошибку:<br/>@proxyExeption</div>
+    }
+</div>
+
+
+@code {
+    //в списке items все новости всех каналов
+    private List<Item> items = new List<Item>();
+    private List<Channel> channels = new List<Channel>();
+
+    private Proxy proxy = new Proxy();
+
+    private XmlDocument xDocRss = new XmlDocument();
+    private XmlElement? xRootRss;
+    private XmlElement? xRootSettings;
+
+    private System.Threading.Timer timer;
+
+    private int channelId = 0;
+
+    private uint refreshTimeInSec;
+    private string settedRefreshTime;
+    private string settedChannel;
+
+    private bool channelAlreadyAdded = false;
+    private bool channelNotResponse = false;
+
+    private bool formattingHtml = true;
+
+    private bool collapsedOptions = true;
+    private bool collapsedMySources = true;
+    private string dNoneOptions = "d-none";
+    private string dNoneMySources = "d-none";
+
+    private const int millisecInSec = 1000;
+
+    private bool settingNotFound = false;
+
+    private bool cantAccessProxy = false;
+    private string proxyExeption;
+
+    protected override void OnInitialized()
+    {
+        LoadSettings();
+        if (!settingNotFound)
+        {
+            FillListChannelsFromSettings();
+            GetRefreshTime();
+            GetProxySettings();
+
+            InvokeAsync(async () =>
+            {
+                if (items.Count == 0 && channels.Count >= 1)
+                {
+                    FillListItems();
+                }
+            });
+        }
+        else
+        {
+            collapsedOptions = true;
+            collapsedMySources = true;
+            dNoneOptions = "";
+            dNoneMySources = "";
+        }
+
+        timer = new System.Threading.Timer((_) =>
+        {
+            InvokeAsync( async ()  =>
+            {
+                CheckItemsOnUpdate();
+                StateHasChanged();
+            });
+        }, null, 0, (refreshTimeInSec*millisecInSec));
+
+    }
+
+    private void LoadSettings()
+    {
+        XmlDocument xDocSettings = new XmlDocument();
+        try
+        {
+            xDocSettings.Load("Settings.xml");
+        }
+        catch (FileNotFoundException)
+        {
+            settingNotFound = true;
+        }
+
+        xRootSettings = xDocSettings.DocumentElement;
+    }
+    private void FillListChannelsFromSettings()
+    {
+        XmlNodeList? itemNodes = xRootSettings?.SelectNodes("//settings/channels/channel");
+
+        foreach (XmlNode node in itemNodes)
+        {
+            Channel channel = new Channel();
+            channel.Url = node.InnerText;
+
+            AddChannelId(channel);
+
+            channels.Add(channel);
+        }
+    }
+
+    private void AddChannelId(Channel channel)
+    {
+        channel.Id = channelId;
+        channelId++;
+    }
+
+    private void GetRefreshTime()
+    {
+        //время обновления ленты из файла настроек
+        XmlNodeList? nodes = xRootSettings?.SelectNodes("//settings/refreshTimeInSec");
+
+        try
+        {
+            if (nodes[0].InnerText != "")
+            {
+                uint.TryParse(nodes[0].InnerText, out refreshTimeInSec);
+            }
+        }
+        catch (Exception)
+        {
+            refreshTimeInSec = 60;
+        }
+
+        
+    }
+    private void GetProxySettings()
+    {
+        XmlNodeList? address = xRootSettings?.SelectNodes("//settings/proxyServerSettings/address");
+        XmlNodeList? login = xRootSettings?.SelectNodes("//settings/proxyServerSettings/login");
+        XmlNodeList? password = xRootSettings?.SelectNodes("//settings/proxyServerSettings/password");
+
+        try
+        {
+            proxy.Address = address[0].InnerText;
+        }
+        catch (NullReferenceException)
+        {
+            proxy.Address = "";
+        }
+
+        try
+        {
+            proxy.Login = login[0].InnerText;
+        }
+        catch (NullReferenceException)
+        {
+            proxy.Login = "";
+        }
+
+        try
+        {
+            proxy.Password = password[0].InnerText;
+        }
+        catch (NullReferenceException)
+        {
+            proxy.Password = "";
+        }
+    }
+
+    private void SetRefreshTime()
+    {
+        uint.TryParse(settedRefreshTime, out refreshTimeInSec);
+        timer.Change(0, (refreshTimeInSec*millisecInSec));
+        settedRefreshTime = "";
+        StateHasChanged();
+    }
+
+    
+    private void AddChannel()
+    {
+        //добавление канала в список channels и заполнение списка items новостями из канала
+        channelAlreadyAdded = false;
+        channelNotResponse = false;
+        bool uShouldSetAnotherChannel = false;
+
+
+        //проверка ссылки на доступность 
+        HttpWebResponse response = null;
+        try
+        {
+            HttpWebRequest request = WebRequest.Create(settedChannel) as HttpWebRequest;
+            request.Method = "HEAD";
+            response = request.GetResponse() as HttpWebResponse;
+            channelNotResponse = !(response.StatusCode == HttpStatusCode.OK);
+            if (channelNotResponse == true)
+            {
+                uShouldSetAnotherChannel = true;
+            }
+            response.Close();
+        }
+        catch (Exception)
+        {
+            channelNotResponse = true;
+            uShouldSetAnotherChannel = true;
+        }
+        finally
+        {
+            if (response != null)
+            {
+                response.Close();
+            }
+        }
+
+        //проверка на попытку добавления уже добавленного канала
+        for (int i = 0; i < channels.Count && uShouldSetAnotherChannel == false && settedChannel != null; i++)
+        {
+
+            if (settedChannel.TrimEnd('/') == channels[i].Url.TrimEnd('/'))
+            {
+                channelAlreadyAdded = true;
+                uShouldSetAnotherChannel = true;
+            }
+
+        }
+
+        //выполнение метода после проверок
+        if (settedChannel != null && uShouldSetAnotherChannel == false)
+        {
+            Channel channel = new Channel();
+            channel.Url = settedChannel;
+
+            AddChannelId(channel);
+            FillItemsForOneChannel(channel);
+
+            channels.Add(channel);
+
+            settedChannel = "";
+
+            channelAlreadyAdded = false;
+            channelNotResponse = false;
+        }
+
+        uShouldSetAnotherChannel = false;
+    }
+    
+    private void DeleteChannel(int channelId)
+    {
+        //удаление канала из списка channels вместе с его новостями из списка items
+
+        //удаление новостей канала из списка items
+        for (int i = 0; i < items.Count; )
+        {
+            if (items[i].ChannelId == channelId)
+            {
+                items.RemoveAt(i);
+            }
+            else
+            {
+                i++;
+            }
+        }
+
+        //удаление канала из списка channels
+        for (int i = 0; i < channels.Count; i++)
+        {
+            if (channels[i].Id == channelId)
+            {
+                channels.RemoveAt(i);
+            }
+        }
+    }
+
+    private void CheckItemsOnUpdate()
+    {
+        //соответствует номеру первой новости канала в списке items 
+        int firstItemInCurrentChannel = 0;
+
+        foreach (var channel in channels)
+        {
+            bool numberIsFound = false;
+
+            int numberOfPostsNeededToAdd = 0;
+
+            //собрали список новостей на канале
+            XmlNodeList? itemNodes = LoadNodesFromChannel(channel);
+
+
+            //ищем сколько новостей добавилось с предыдущего обновления списка items. проверка происходит по тайтлу новости
+            for (; numberOfPostsNeededToAdd < itemNodes.Count && numberIsFound == false; numberOfPostsNeededToAdd++)
+            {
+                foreach (XmlNode childnode in itemNodes[numberOfPostsNeededToAdd].ChildNodes)
+                {
+                    if (childnode.Name == "title" && items[firstItemInCurrentChannel].Title == childnode.InnerText)
+                    {
+                        numberOfPostsNeededToAdd--;
+                        numberIsFound = true;
+                        break;
+                    }
+                }
+            }
+
+
+            if (numberOfPostsNeededToAdd > 0)
+            {
+                AddNewItems(channel, itemNodes, numberOfPostsNeededToAdd, firstItemInCurrentChannel);
+                DeleteOldItems(numberOfPostsNeededToAdd, (firstItemInCurrentChannel + channel.Length - 1));
+            }
+
+            //получаем номер первой новости для следующего канала
+            firstItemInCurrentChannel += channel.Length;
+        }
+
+    }
+    private void AddNewItems(Channel channel, XmlNodeList? itemNodes, int numberOfPostsNeededToAdd, int firstItemInCurrentChannel)
+    {
+
+        for (int i = 0; i < numberOfPostsNeededToAdd; i++)
+        {
+            Item item = new Item();
+
+            foreach (XmlNode childnode in itemNodes[i].ChildNodes)
+            {
+                item = FillItem(channel, item, childnode);
+            }
+
+            items.Insert((firstItemInCurrentChannel + i), item);
+        }
+
+    }
+    private void DeleteOldItems(int numberOfPostsNeededToAdd, int lastItemInCurrentChannel)
+    {
+        items.RemoveRange((lastItemInCurrentChannel - numberOfPostsNeededToAdd + 2), numberOfPostsNeededToAdd);
+    }
+
+
+    private void FillListItems()
+    {
+        //вызывается только при инициализации
+        foreach (var channel in channels)
+        {
+            FillItemsForOneChannel(channel);
+        }
+    }
+
+    private void FillItemsForOneChannel(Channel channel)
+    {
+        XmlNodeList? itemNodes = LoadNodesFromChannel(channel);
+
+        //стандартное количество постов в канале
+        channel.Length = itemNodes.Count;
+
+        foreach (XmlNode node in itemNodes)
+        {
+            Item item = new Item();
+            foreach (XmlNode childnode in node.ChildNodes)
+            {
+                item = FillItem(channel, item, childnode);
+            }
+            items.Add(item);
+        }
+    }
+    private XmlNodeList LoadNodesFromChannel(Channel channel)
+    {
+
+        if (proxy.Address != "")
+        {
+            LoadChannelWithProxy(channel);
+        }
+        else
+        {
+            xDocRss.Load(channel.Url);
+        }
+
+        xRootRss = xDocRss.DocumentElement;
+        XmlNodeList? itemNodes = xRootRss?.SelectNodes("//channel/item");
+        return itemNodes;
+    }
+
+
+    private void LoadChannelWithProxy(Channel channel)
+    {
+        WebProxy wp = new WebProxy(proxy.Address);
+
+        if (proxy.Login != "" && proxy.Password != "")
+        {
+            wp.Credentials = new NetworkCredential(proxy.Login, proxy.Password);
+        }
+
+        WebClient wc = new WebClient();
+        wc.Proxy = wp;
+
+        MemoryStream ms;
+
+        try
+        {
+            ms = new MemoryStream(wc.DownloadData(channel.Url));
+        }
+        catch (WebException ex)
+        {
+            cantAccessProxy = true;
+            proxyExeption = ex.Message;
+            return;
+        }
+
+        XmlTextReader rdr = new XmlTextReader(ms);
+        xDocRss.Load(rdr);        
+    }
+
+    private Item FillItem(Channel channel, Item item, XmlNode childnode)
+    {
+        item.ChannelUrl = channel.Url;
+        item.ChannelId = channel.Id;
+        if (childnode.Name == "title")
+            item.Title = childnode.InnerText;
+
+        if (childnode.Name == "link")
+            item.Link = childnode.InnerText;
+
+        if (childnode.Name == "description")
+            item.Description = childnode.InnerText;
+
+        if (childnode.Name == "pubDate")
+            item.PubDate = DateConverter(childnode.InnerText);
+
+        item.HtmlTitle = $"<div class=\"titleCollapsable\"><a href=\"{item.Link}\"><h2>{item.Title}</h2></a></div>";
+        return item;
+    }
+    private string DateConverter(string PubDate)
+    {
+        PubDate = DateTime.Parse(PubDate).ToString(CultureInfo.CurrentCulture);
+        return PubDate;
+    }
+    
+    private void ToggleFormatting()
+    {
+        formattingHtml = !formattingHtml;
+    }
+    private void ToggleMySources()
+    {
+        collapsedMySources = !collapsedMySources;
+        if (dNoneMySources == "d-none")
+        {
+            dNoneMySources = "";
+        }
+        else
+        {
+            dNoneMySources = "d-none";
+        }
+    }
+    private void ToggleOptions()
+    {
+        collapsedOptions = !collapsedOptions;
+        if (dNoneOptions == "d-none")
+        {
+            dNoneOptions = "";
+        }
+        else
+        {
+            dNoneOptions = "d-none";
+        }
+    }
+}

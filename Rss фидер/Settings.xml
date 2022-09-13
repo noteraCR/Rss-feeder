@@ -1,0 +1,12 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<settings>
+  <refreshTimeInSec>60</refreshTimeInSec>
+  <channels>
+    <channel>https://habr.com/ru/rss/interesting/</channel>
+  </channels>
+  <proxyServerSettings>
+    <address></address>
+    <login></login>
+    <password></password>
+  </proxyServerSettings>
+</settings>
